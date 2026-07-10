@@ -30,6 +30,8 @@ can see it too, and you can roll back).
    - Execute as: **Me**
    - Who has access: **Anyone** (not "Anyone with Google account" — this breaks JSONP reads, same issue you hit with the other apps)
 5. Click Deploy, authorize, then copy the **Web app URL** (ends in `/exec`).
+
+   **Do not test using the editor's "Run" button** — `doGet`/`doPost` expect a real web request object, so Run will throw `Cannot read properties of undefined`. To test, open the `/exec` URL directly in a browser tab with `?action=history` on the end — you should see `{"versions":[]}`.
 6. In the Process Map app, click **⚙ Settings** (top right), paste the URL, add your name, Save.
 7. Click **Save Version** any time to push a snapshot — it becomes a new row in the sheet, never overwriting old ones.
 8. Click **⏱ Versions** to browse and restore any past snapshot.
