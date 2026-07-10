@@ -318,6 +318,9 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
   <div id="search-wrap"><input type="text" id="search-input" placeholder="Search process, machine, person…"></div>
   <div class="tb-sep"></div>
   <button class="tb-btn" id="btn-report">▤ Consultant Report</button>
+  <button class="tb-btn" id="btn-snapshot-dl">⬇ Snapshot</button>
+  <button class="tb-btn" id="btn-snapshot-ul">⬆ Load Snapshot</button>
+  <input type="file" id="snapshot-file-input" accept=".json" style="display:none">
   <div id="topbar-spacer"></div>
   <span id="zoom-readout">100%</span>
   <span id="save-status">—</span>
@@ -382,8 +385,10 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
       <input type="text" id="settings-url" placeholder="https://script.google.com/macros/s/…/exec">
       <label style="margin-top:14px;">Your name (recorded with each save)</label>
       <input type="text" id="settings-author" placeholder="Tejas">
+      <div id="settings-test-result" style="margin-top:12px; font-size:12px; color:var(--text-dim); font-family:'IBM Plex Mono',monospace; line-height:1.6;"></div>
     </div>
     <div class="modal-foot">
+      <button id="settings-test">Test Connection</button>
       <button data-close>Cancel</button>
       <button class="primary" id="settings-save">Save Settings</button>
     </div>
@@ -440,6 +445,8 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
     <div style="display:flex; gap:8px;">
       <button class="tb-btn" id="btn-report-print">🖨 Print / Save PDF</button>
       <button class="tb-btn" id="btn-report-csv">⬇ Export CSV</button>
+      <button class="tb-btn" id="btn-report-csv-import">⬆ Import Edited CSV</button>
+      <input type="file" id="csv-file-input" accept=".csv" style="display:none">
       <button class="tb-btn" id="btn-report-close">✕ Close</button>
     </div>
   </div>
@@ -647,6 +654,8 @@ const CAT_COLORS = {
 const CAT_LIST = ["material","chemical","mechanical","thermal","packaging","safety","data","electrical"];
 const LS_STATE = "innotek-pm-state-v1";
 const LS_SETTINGS = "innotek-pm-settings-v1";
+const LS_VERSIONS = "innotek-pm-versions-v1";
+const MAX_LOCAL_VERSIONS = 30;
 
 let state = null;       // { nodes:{id:node}, edges:[...], order:[ids in creation order] }
 let view = { tx:60, ty:60, scale:0.62 };
@@ -690,6 +699,26 @@ let storageBlocked = false;
 function saveLocal(){
   try{ localStorage.setItem(LS_STATE, JSON.stringify(state)); markSaved(); }
   catch(e){ storageBlocked = true; markSaved(true); }
+}
+
+// ---------------------------------------------------------------- local version history (always works, no Google dependency)
+function getLocalVersions(){
+  try{ return JSON.parse(localStorage.getItem(LS_VERSIONS)) || []; }catch(e){ return []; }
+}
+function saveLocalVersion(label, author){
+  let versions = getLocalVersions();
+  versions.push({ ts: new Date().toISOString(), label, author: author||"Unknown", data: JSON.stringify({nodes:state.nodes, edges:state.edges}) });
+  if(versions.length > MAX_LOCAL_VERSIONS) versions = versions.slice(versions.length - MAX_LOCAL_VERSIONS);
+  try{ localStorage.setItem(LS_VERSIONS, JSON.stringify(versions)); return true; }
+  catch(e){ toast("⚠ Couldn't save local version history — storage may be full or blocked. Use ⬇ Snapshot to save a file instead."); return false; }
+}
+function restoreLocalVersion(ts){
+  const v = getLocalVersions().find(x=>x.ts===ts);
+  if(!v) return false;
+  const graph = JSON.parse(v.data);
+  state.nodes = graph.nodes; state.edges = graph.edges; state.order = Object.keys(graph.nodes);
+  saveLocal(); render(); fitToScreen();
+  return true;
 }
 function markDirty(){ dirty = true; document.getElementById("save-status").textContent = "Unsaved changes"; }
 function markSaved(blocked){
@@ -1156,14 +1185,20 @@ document.getElementById("settings-save").addEventListener("click", ()=>{
 });
 
 // ---------------------------------------------------------------- Google Sheets sync
-function jsonp(url, params, cb){
+function jsonp(url, params, cb, timeoutMs){
+  let done = false;
   const cbName = "jsonp_cb_"+Date.now()+"_"+Math.floor(Math.random()*1e4);
   const qs = Object.keys(params).map(k=>encodeURIComponent(k)+"="+encodeURIComponent(params[k])).join("&");
-  window[cbName] = function(data){ cleanup(); cb(null, data); };
+  window[cbName] = function(data){ if(done) return; done=true; cleanup(); cb(null, data); };
   const script = document.createElement("script");
   script.src = url + (url.includes("?")?"&":"?") + qs + "&callback="+cbName;
-  script.onerror = ()=>{ cleanup(); cb(new Error("network")); };
-  function cleanup(){ delete window[cbName]; script.remove(); }
+  script.onerror = ()=>{ if(done) return; done=true; cleanup(); cb(new Error("network")); };
+  function cleanup(){ delete window[cbName]; script.remove(); clearTimeout(timer); }
+  const timer = setTimeout(()=>{
+    if(done) return; done=true; cleanup();
+    cb(new Error("timeout")); // script loaded (or hung) but never called back — usually means Google
+                               // returned a sign-in/permission page instead of real JSON (Workspace policy block)
+  }, timeoutMs || 8000);
   document.body.appendChild(script);
 }
 
@@ -1181,39 +1216,134 @@ function loadLatestVersion(silent){
   });
 }
 
+function commitVersion(label, {silent}={}){
+  saveLocal();
+  const ok = saveLocalVersion(label, settings.author);
+  if(ok && !silent) toast("Saved as new version ✓ — “"+label+"” (open ⏱ Versions to see it)");
+
+  if(settings.url){
+    const fd = new FormData();
+    fd.append("action","save");
+    fd.append("label", label);
+    fd.append("author", settings.author||"Unknown");
+    fd.append("data", JSON.stringify({nodes:state.nodes, edges:state.edges}));
+    fetch(settings.url, {method:"POST", mode:"no-cors", body:fd})
+      .then(()=>{
+        setTimeout(()=>{
+          jsonp(settings.url, {action:"load"}, (err,res)=>{
+            if(!err && res && res.label===label){
+              toast("Also confirmed on Google Sheet ✓");
+            } else if(err && err.message==="timeout"){
+              toast("⚠ Sheet didn't respond (likely blocked by Workspace policy) — your version is safely saved locally though");
+            } else {
+              toast("⚠ Couldn't confirm the Sheet copy — your version is safely saved locally though");
+            }
+          });
+        }, 1500);
+      })
+      .catch(()=> toast("⚠ Sheet save failed — your version is safely saved locally though"));
+  }
+  return ok;
+}
+
 document.getElementById("btn-save").addEventListener("click", ()=>{
-  if(!settings.url){ toast("Add your Google Sheet URL first (⚙ Settings)"); openModal("modal-settings"); return; }
   document.getElementById("save-label").value="";
   openModal("modal-save");
 });
 document.getElementById("save-confirm").addEventListener("click", ()=>{
   const label = document.getElementById("save-label").value.trim() || "Untitled update";
-  const fd = new FormData();
-  fd.append("action","save");
-  fd.append("label", label);
-  fd.append("author", settings.author||"Unknown");
-  fd.append("data", JSON.stringify({nodes:state.nodes, edges:state.edges}));
-  fetch(settings.url, {method:"POST", mode:"no-cors", body:fd})
-    .then(()=> toast("Saved as new version ✓ — “"+label+"”"))
-    .catch(()=> toast("Save failed — check your connection"));
   closeModal("modal-save");
-  saveLocal();
+  commitVersion(label);
+});
+
+document.getElementById("settings-test").addEventListener("click", ()=>{
+  const url = document.getElementById("settings-url").value.trim();
+  const box = document.getElementById("settings-test-result");
+  if(!url){ box.textContent = "Enter a URL first."; return; }
+  box.textContent = "Testing…";
+  jsonp(url, {action:"history"}, (err,res)=>{
+    if(err && err.message==="timeout"){
+      box.innerHTML = "✗ Timed out waiting for a response — this is the classic sign of your Workspace admin blocking anonymous access. Try opening the /exec URL directly in a browser tab: if it asks you to sign in or says you need permission, that confirms it. Ask IT to allow \"Anyone\" access for this script, or just use ⬇ Snapshot / CSV import instead.";
+      return;
+    }
+    if(err){
+      box.innerHTML = "✗ No response — check the URL is the deployed <code>/exec</code> link, not the editor URL.";
+      return;
+    }
+    if(res && res.error === undefined && res.versions !== undefined){
+      box.innerHTML = `✓ Connected — ${res.versions.length} version(s) found on the Sheet.`;
+    } else if(res && typeof res === "string" && res.indexOf("only responds to real web requests")>=0){
+      box.innerHTML = "✗ Reached the script, but got a setup message back — redeploy as Web App (Execute as: Me, Access: Anyone).";
+    } else {
+      box.innerHTML = "⚠ Got an unexpected response. Likely cause: your Google Workspace admin restricts anonymous access to Apps Script web apps — open the /exec URL directly in a browser tab and see if it asks you to sign in. If so, this needs your IT admin to allow it, or use ⬇ Snapshot / CSV import instead (fully offline, no Google account needed).";
+    }
+  });
 });
 
 document.getElementById("btn-versions").addEventListener("click", ()=>{
-  if(!settings.url){ toast("Add your Google Sheet URL first (⚙ Settings)"); openModal("modal-settings"); return; }
   openModal("modal-versions");
+  renderVersionsList();
+});
+
+function versionRow(label, meta, onClick){
+  const row = document.createElement("div"); row.className="version-row";
+  row.innerHTML = `<div class="vlabel">${escapeHtml(label||"Untitled")}</div><div class="vmeta">${escapeHtml(meta)}</div>`;
+  row.addEventListener("click", onClick);
+  return row;
+}
+
+function renderVersionsList(){
   const list = document.getElementById("versions-list");
-  list.innerHTML = "Loading…";
+  list.innerHTML = "";
+
+  const localHead = document.createElement("h4");
+  localHead.style.cssText = "font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);font-family:'IBM Plex Mono',monospace;margin:0 0 8px;";
+  localHead.textContent = "Local history (this browser — always available)";
+  list.appendChild(localHead);
+
+  const local = getLocalVersions();
+  if(!local.length){
+    const p = document.createElement("p"); p.className="hint"; p.textContent = "No local versions yet — click Save Version to create one.";
+    list.appendChild(p);
+  } else {
+    local.slice().reverse().forEach(v=>{
+      const row = versionRow(v.label, new Date(v.ts).toLocaleString()+" · "+(v.author||""), ()=>{
+        if(!confirm("Load this version? Your current canvas will be replaced (it's autosaved, so nothing is lost).")) return;
+        restoreLocalVersion(v.ts);
+        closeModal("modal-versions");
+        toast("Restored version: "+v.label);
+      });
+      list.appendChild(row);
+    });
+  }
+
+  if(!settings.url) return;
+
+  const sheetHead = document.createElement("h4");
+  sheetHead.style.cssText = "font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--text-faint);font-family:'IBM Plex Mono',monospace;margin:20px 0 8px;";
+  sheetHead.textContent = "Google Sheet history (shared)";
+  list.appendChild(sheetHead);
+  const sheetBox = document.createElement("div");
+  sheetBox.textContent = "Loading…";
+  list.appendChild(sheetBox);
+
   jsonp(settings.url, {action:"history"}, (err,res)=>{
-    if(err || !res || !res.versions){ list.innerHTML = "Couldn't load history."; return; }
-    if(!res.versions.length){ list.innerHTML = "No saved versions yet."; return; }
-    list.innerHTML = "";
+    if(err && err.message==="timeout"){
+      sheetBox.innerHTML = "No response after 8s — Google likely returned a sign-in/permission page instead of data. This usually means your Workspace admin restricts anonymous access to this Apps Script web app. Click ⚙ Settings → Test Connection for details. Your local history above is unaffected.";
+      return;
+    }
+    if(err || !res || !res.versions){
+      sheetBox.innerHTML = "Couldn't reach the Sheet. Click ⚙ Settings → Test Connection to diagnose. Your local history above is unaffected.";
+      return;
+    }
+    if(!res.versions.length){
+      sheetBox.innerHTML = "No versions on the Sheet yet.";
+      return;
+    }
+    sheetBox.innerHTML = "";
     res.versions.slice().reverse().forEach(v=>{
-      const row = document.createElement("div"); row.className="version-row";
-      row.innerHTML = `<div class="vlabel">${escapeHtml(v.label||"Untitled")}</div><div class="vmeta">${v.timestamp} · ${escapeHtml(v.author||"")}</div>`;
-      row.addEventListener("click", ()=>{
-        if(!confirm("Load this version? Your current unsaved canvas will be replaced (local autosave keeps a copy).")) return;
+      const row = versionRow(v.label, v.timestamp+" · "+(v.author||""), ()=>{
+        if(!confirm("Load this version? Your current canvas will be replaced (it's autosaved, so nothing is lost).")) return;
         jsonp(settings.url, {action:"loadVersion", ts:v.timestamp}, (e2,r2)=>{
           if(e2||!r2||!r2.data){ toast("Couldn't load that version"); return; }
           const graph = JSON.parse(r2.data);
@@ -1222,10 +1352,10 @@ document.getElementById("btn-versions").addEventListener("click", ()=>{
           toast("Restored version: "+v.label);
         });
       });
-      list.appendChild(row);
+      sheetBox.appendChild(row);
     });
   });
-});
+}
 
 // ---------------------------------------------------------------- consultant report
 document.getElementById("btn-report").addEventListener("click", buildReport);
@@ -1279,18 +1409,135 @@ function renderReportNode(n){
 }
 
 document.getElementById("btn-report-csv").addEventListener("click", ()=>{
-  const rows = [["Stage/Parent","Title","Category","Status","Machine/Equipment","Capacity","Cycle Time","Utilities","Space","Automation","Notes"]];
+  const rows = [["Node ID","Stage/Parent","Title","Category","Status","Machine/Equipment","Capacity","Cycle Time","Utilities","Space","Automation","Notes"]];
   state.order.forEach(id=>{
     const n = state.nodes[id];
     if(n.type==="root") return;
     const parentTitle = n.parentId && state.nodes[n.parentId] ? state.nodes[n.parentId].title : "";
-    rows.push([parentTitle,n.title,n.category,n.status,n.machine||"",n.capacity||"",n.cycleTime||"",n.utilities||"",n.space||"",n.automation||"",(n.notes||"").replace(/\n/g," ")]);
+    rows.push([n.id,parentTitle,n.title,n.category,n.status,n.machine||"",n.capacity||"",n.cycleTime||"",n.utilities||"",n.space||"",n.automation||"",(n.notes||"").replace(/\n/g," ")]);
   });
   const csv = rows.map(r=> r.map(c=> `"${String(c||"").replace(/"/g,'""')}"`).join(",")).join("\n");
   const blob = new Blob([csv], {type:"text/csv"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob); a.download = "innotek-process-map.csv";
   a.click();
+});
+
+// ---------------------------------------------------------------- CSV import (round-trip with consultant)
+function parseCSV(text){
+  // Minimal RFC4180-ish parser: handles quoted fields, "" escapes, commas & newlines inside quotes.
+  const rows = []; let row = []; let field = ""; let inQuotes = false;
+  for(let i=0;i<text.length;i++){
+    const c = text[i];
+    if(inQuotes){
+      if(c === '"'){
+        if(text[i+1] === '"'){ field+='"'; i++; } else { inQuotes=false; }
+      } else field += c;
+    } else {
+      if(c === '"') inQuotes = true;
+      else if(c === ','){ row.push(field); field=""; }
+      else if(c === '\n'){ row.push(field); rows.push(row); row=[]; field=""; }
+      else if(c === '\r'){ /* skip */ }
+      else field += c;
+    }
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows.filter(r=> r.length>1 || (r[0]||"").trim()!=="");
+}
+
+document.getElementById("btn-report-csv-import").addEventListener("click", ()=> document.getElementById("csv-file-input").click());
+document.getElementById("csv-file-input").addEventListener("change",(e)=>{
+  const file = e.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const rows = parseCSV(reader.result);
+      const header = rows[0].map(h=>h.trim().toLowerCase());
+      const col = (name)=> header.indexOf(name);
+      const idx = {
+        id: col("node id"), parent: col("stage/parent"), title: col("title"), category: col("category"),
+        status: col("status"), machine: col("machine/equipment"), capacity: col("capacity"),
+        cycleTime: col("cycle time"), utilities: col("utilities"), space: col("space"),
+        automation: col("automation"), notes: col("notes")
+      };
+      if(idx.title < 0){ toast("That doesn't look like an exported process-map CSV (no Title column found)"); return; }
+      let updated=0, added=0, skipped=0;
+      for(let r=1;r<rows.length;r++){
+        const row = rows[r];
+        if(!row || !(row[idx.title]||"").trim()) continue;
+        const id = idx.id>=0 ? (row[idx.id]||"").trim() : "";
+        const get = (i)=> i>=0 ? (row[i]||"").trim() : "";
+        if(id && state.nodes[id]){
+          const n = state.nodes[id];
+          n.title = get(idx.title) || n.title;
+          if(get(idx.category)) n.category = get(idx.category);
+          if(get(idx.status)) n.status = get(idx.status);
+          n.machine = get(idx.machine); n.capacity = get(idx.capacity); n.cycleTime = get(idx.cycleTime);
+          n.utilities = get(idx.utilities); n.space = get(idx.space); n.automation = get(idx.automation);
+          n.notes = get(idx.notes);
+          updated++;
+        } else if(!id){
+          // new row with no Node ID → consultant proposed a new node
+          const newId = "n-"+Date.now()+"-"+r;
+          state.nodes[newId] = { id:newId, parentId:null, type:"custom",
+            title:get(idx.title)||"New node", category:get(idx.category)||"mechanical",
+            status:get(idx.status)||"redesign", machine:get(idx.machine), capacity:get(idx.capacity),
+            cycleTime:get(idx.cycleTime), utilities:get(idx.utilities), space:get(idx.space),
+            automation:get(idx.automation), notes:get(idx.notes),
+            x: 40 + (added%6)*250, y: 40 + Math.floor(added/6)*140, collapsed:false, manualPos:true };
+          state.order.push(newId);
+          added++;
+        } else {
+          skipped++; // Node ID present but not found — CSV was edited from an older map version
+        }
+      }
+      saveLocal(); render(); fitToScreen();
+      const summary = `${updated} updated, ${added} new node(s) added${skipped?`, ${skipped} skipped (unknown ID)`:""}`;
+      if(updated || added){
+        const label = "Consultant CSV revision — " + new Date().toLocaleDateString() + " (" + summary + ")";
+        commitVersion(label, {silent:true});
+        toast(`CSV imported and saved as a new version ✓ — ${summary}`);
+      } else {
+        toast(`CSV imported — ${summary}`);
+      }
+      document.getElementById("report-overlay").classList.remove("open");
+    }catch(err){
+      console.error(err);
+      toast("Couldn't read that CSV — make sure it's the file exported from this app");
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = "";
+});
+
+// ---------------------------------------------------------------- local snapshot (works fully offline, no Sheets/IT dependency)
+document.getElementById("btn-snapshot-dl").addEventListener("click", ()=>{
+  const payload = { savedAt: new Date().toISOString(), nodes: state.nodes, edges: state.edges };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], {type:"application/json"});
+  const stamp = new Date().toISOString().slice(0,16).replace(/[:T]/g,"-");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = `innotek-process-map_${stamp}.json`;
+  a.click();
+  toast("Snapshot downloaded — keep it as your version backup");
+});
+document.getElementById("btn-snapshot-ul").addEventListener("click", ()=> document.getElementById("snapshot-file-input").click());
+document.getElementById("snapshot-file-input").addEventListener("change",(e)=>{
+  const file = e.target.files[0]; if(!file) return;
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const payload = JSON.parse(reader.result);
+      if(!payload.nodes) throw new Error("no nodes");
+      if(!confirm("Load this snapshot? It will replace what's currently on the canvas (your browser autosave keeps a copy of the current state until you overwrite it).")) return;
+      state.nodes = payload.nodes; state.edges = payload.edges||[]; state.order = Object.keys(payload.nodes);
+      saveLocal(); render(); fitToScreen();
+      toast("Snapshot loaded ✓");
+    }catch(err){
+      toast("That doesn't look like a valid snapshot file");
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = "";
 });
 
 // ---------------------------------------------------------------- keyboard
