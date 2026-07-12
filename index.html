@@ -6,7 +6,6 @@
 <title>Innotek Process Map — NFG Wet Processing Redesign</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
 :root{
   --bg:#12161a;
@@ -294,19 +293,23 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
 .report-node .rn-grid b{ color:var(--text); font-weight:600; }
 .report-node .rn-notes{ font-size:12.5px; color:var(--text-dim); line-height:1.6; border-top:1px solid var(--border-soft); padding-top:8px; margin-top:4px;}
 @media print{
+  html, body{ overflow:visible !important; height:auto !important; }
   #topbar, #canvas-viewport, #legend, #legend-toggle, #zoom-controls, #side-panel, #toast, .modal-overlay{
     display:none !important;
   }
-  #report-overlay{ position:static; background:#fff; color:#111; }
-  #report-bar{ display:none; }
+  #report-overlay{ position:static !important; background:#fff !important; color:#111; overflow:visible !important; height:auto !important; }
+  #report-bar{ display:none !important; }
   #report-content h1{ color:#111; border-color:#333; }
   .report-stage h2{ color:#333; border-color:#888; }
   .report-node{ border-color:#ccc; background:#fafafa; break-inside:avoid; }
   .report-node .rn-grid, .report-node .rn-notes{ color:#333; }
+  .report-node .rn-grid b{ color:#111; }
 
-  #map-export-overlay{ position:static !important; background:#fff !important; }
+  #map-export-overlay{ position:static !important; background:#fff !important; overflow:visible !important; height:auto !important; }
   #map-export-bar{ display:none !important; }
-  #map-export-img{ max-width:100% !important; }
+  #map-export-body{ padding:0 !important; }
+  #map-export-body p.hint{ display:none !important; }
+  #map-export-img{ max-width:100% !important; border:none !important; box-shadow:none !important; }
 }
 
 /* ============ MAP EXPORT VIEW ============ */
@@ -484,7 +487,7 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
     </div>
   </div>
   <div id="map-export-body">
-    <p class="hint">A clean, full-size render of the entire map (not just what's on screen) — good for printing, PDF, or dropping into a deck for consultants.</p>
+    <p class="hint">A clean, print-friendly render of the entire map — every node and connection, regardless of what's on screen or your zoom level. Print / Save as PDF, or download the PNG for slide decks.</p>
     <div id="map-export-loading">Rendering full map at high resolution…</div>
     <img id="map-export-img" class="hidden">
   </div>
@@ -1399,7 +1402,10 @@ document.getElementById("btn-report").addEventListener("click", buildReport);
 document.getElementById("btn-report-close").addEventListener("click", ()=> document.getElementById("report-overlay").classList.remove("open"));
 document.getElementById("btn-report-print").addEventListener("click", ()=> window.print());
 
-// ---------------------------------------------------------------- visual map export (clean, full-extent, high-res)
+// ---------------------------------------------------------------- visual map export
+// Renders the FULL graph directly from data as a print-friendly SVG (light theme),
+// then rasterizes to PNG. No screenshots, no external libraries — so it can never
+// be clipped by scroll position, zoom level, or viewport size.
 document.getElementById("btn-map-export").addEventListener("click", exportMapVisual);
 document.getElementById("btn-map-export-close").addEventListener("click", ()=>{
   document.getElementById("map-export-overlay").classList.remove("open");
@@ -1413,42 +1419,174 @@ document.getElementById("btn-map-png").addEventListener("click", ()=>{
   a.click();
 });
 
-function exportMapVisual(){
-  if(typeof html2canvas === "undefined"){
-    toast("Couldn't load the export library — check your internet connection and try again");
-    return;
+const EXPORT_CAT_HEX = {
+  material:"#5a6fbe", chemical:"#b07c2e", mechanical:"#2a89ab", thermal:"#c04e3e",
+  packaging:"#3d8f5f", safety:"#b23a5c", data:"#7d68b8", electrical:"#a08f2c", group:"#5f6e76"
+};
+const EXPORT_STATUS = {
+  "as-is":    { stroke:"#9aa5ab", dash:"" },
+  "redesign": { stroke:"#b97f2a", dash:"6,4" },
+  "new":      { stroke:"#3d8f5f", dash:"6,4" },
+  "eliminate":{ stroke:"#c04747", dash:"6,4" }
+};
+const EXP_NODE_W = 220, EXP_NODE_H = 84;
+
+function xmlEsc(s){ return String(s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+function wrapText(s, maxChars, maxLines){
+  const words = String(s||"").split(/\s+/).filter(Boolean);
+  const lines = []; let cur = "";
+  for(const w of words){
+    if((cur+" "+w).trim().length <= maxChars){ cur = (cur+" "+w).trim(); }
+    else{
+      if(cur) lines.push(cur);
+      cur = w;
+      if(lines.length === maxLines-1) break;
+    }
   }
+  if(cur && lines.length < maxLines) lines.push(cur);
+  const used = lines.join(" ").length;
+  if(used < String(s||"").trim().length && lines.length){
+    let last = lines[lines.length-1];
+    lines[lines.length-1] = last.slice(0, Math.max(0, maxChars-1)) + "…";
+  }
+  return lines;
+}
+function truncate(s, n){ s = String(s||""); return s.length>n ? s.slice(0,n-1)+"…" : s; }
+
+function buildExportSvg(){
+  const visIds = state.order.filter(id=> isVisible(state.nodes[id]));
+  if(!visIds.length) return null;
+
+  // true bounding box, including negative coordinates
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  visIds.forEach(id=>{
+    const n = state.nodes[id];
+    minX = Math.min(minX, n.x); minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + EXP_NODE_W); maxY = Math.max(maxY, n.y + EXP_NODE_H);
+  });
+  const PAD = 50, HEADER = 70;
+  const W = Math.ceil(maxX - minX + PAD*2);
+  const H = Math.ceil(maxY - minY + PAD*2 + HEADER);
+  const ox = PAD - minX, oy = PAD + HEADER - minY; // shift into positive space
+
+  const cx = n => n.x + ox + EXP_NODE_W/2;
+  const cy = n => n.y + oy + 30;
+
+  let edges = "", nodes = "";
+
+  // tree edges
+  visIds.forEach(id=>{
+    const n = state.nodes[id];
+    if(!n.parentId || !state.nodes[n.parentId] || !visIds.includes(n.parentId)) return;
+    const p = state.nodes[n.parentId];
+    const x1 = cx(p)+EXP_NODE_W/2 - 10, y1 = cy(p), x2 = cx(n)-EXP_NODE_W/2 + 10, y2 = cy(n);
+    const mid = (x1+x2)/2;
+    edges += `<path d="M ${x1} ${y1} H ${mid} V ${y2} H ${x2}" fill="none" stroke="#aeb8bf" stroke-width="1.6"/>`;
+  });
+  // custom edges
+  state.edges.forEach(e=>{
+    const a = state.nodes[e.from], b = state.nodes[e.to];
+    if(!a || !b || !visIds.includes(e.from) || !visIds.includes(e.to)) return;
+    const x1 = cx(a), y1 = cy(a), x2 = cx(b), y2 = cy(b);
+    const mid = (x1+x2)/2;
+    edges += `<path d="M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}" fill="none" stroke="#2a89ab" stroke-width="1.4" stroke-dasharray="5,4" opacity="0.75"/>`;
+    if(e.label){
+      edges += `<text x="${mid}" y="${(y1+y2)/2 - 6}" font-family="Arial, sans-serif" font-size="9.5" fill="#5f7280" text-anchor="middle">${xmlEsc(e.label)}</text>`;
+    }
+  });
+
+  // nodes
+  visIds.forEach(id=>{
+    const n = state.nodes[id];
+    const x = n.x + ox, y = n.y + oy;
+    const cat = EXPORT_CAT_HEX[n.category] || EXPORT_CAT_HEX.group;
+    const st = EXPORT_STATUS[n.status] || EXPORT_STATUS["as-is"];
+    const titleLines = wrapText(n.title, 30, 2);
+    const isStage = n.type==="stage" || n.type==="root";
+
+    nodes += `<g>`;
+    nodes += `<rect x="${x}" y="${y}" width="${EXP_NODE_W}" height="${EXP_NODE_H}" rx="3" fill="${isStage?"#f2f5f7":"#ffffff"}" stroke="${st.stroke}" stroke-width="${isStage?2:1.5}"${st.dash?` stroke-dasharray="${st.dash}"`:""}/>`;
+    nodes += `<rect x="${x}" y="${y}" width="4" height="${EXP_NODE_H}" fill="${cat}"/>`;
+    nodes += `<text x="${x+14}" y="${y+16}" font-family="Arial, sans-serif" font-size="8.5" font-weight="bold" fill="${cat}" letter-spacing="0.5">${xmlEsc((n.category||"group").toUpperCase())}</text>`;
+    titleLines.forEach((line,i)=>{
+      nodes += `<text x="${x+14}" y="${y+33+i*15}" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#1a2126">${xmlEsc(line)}</text>`;
+    });
+    let metaY = y + 33 + titleLines.length*15 + 2;
+    if(n.machine && metaY < y+EXP_NODE_H-6){
+      nodes += `<text x="${x+14}" y="${metaY}" font-family="Arial, sans-serif" font-size="9.5" fill="#5f7280">${xmlEsc(truncate("⚙ "+n.machine, 40))}</text>`;
+      metaY += 13;
+    }
+    if(n.cycleTime && metaY < y+EXP_NODE_H-4){
+      nodes += `<text x="${x+14}" y="${metaY}" font-family="Arial, sans-serif" font-size="9.5" fill="#5f7280">${xmlEsc(truncate("⏱ "+n.cycleTime, 40))}</text>`;
+    }
+    if(n.status && n.status!=="as-is"){
+      const chipW = n.status.length*6.5 + 14;
+      nodes += `<rect x="${x+EXP_NODE_W-chipW-6}" y="${y-9}" width="${chipW}" height="15" rx="7.5" fill="${st.stroke}"/>`;
+      nodes += `<text x="${x+EXP_NODE_W-chipW/2-6}" y="${y+2}" font-family="Arial, sans-serif" font-size="8.5" font-weight="bold" fill="#ffffff" text-anchor="middle">${xmlEsc(n.status.toUpperCase())}</text>`;
+    }
+    nodes += `</g>`;
+  });
+
+  // header + legend
+  let header = `<text x="${PAD}" y="${PAD-14}" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#1a2126">Innotek — NFG Wet Processing · Process Map</text>`;
+  header += `<text x="${PAD}" y="${PAD+6}" font-family="Arial, sans-serif" font-size="10.5" fill="#5f7280">Exported ${new Date().toLocaleString()} · dashed borders = redesign (amber) / new equipment (green) / eliminate (red) · dashed blue lines = cross-process connections</text>`;
+  let lx = PAD;
+  Object.entries(EXPORT_CAT_HEX).forEach(([name,hex])=>{
+    if(name==="group") return;
+    header += `<circle cx="${lx+4}" cy="${PAD+22}" r="4" fill="${hex}"/>`;
+    header += `<text x="${lx+12}" y="${PAD+26}" font-family="Arial, sans-serif" font-size="9.5" fill="#3a4650">${name}</text>`;
+    lx += 14 + name.length*5.6 + 18;
+  });
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
+    + `<rect width="${W}" height="${H}" fill="#ffffff"/>`
+    + header + edges + nodes + `</svg>`;
+  return { svg, W, H };
+}
+
+function exportMapVisual(){
   const overlay = document.getElementById("map-export-overlay");
   const loading = document.getElementById("map-export-loading");
   const img = document.getElementById("map-export-img");
-  img.classList.add("hidden"); loading.classList.remove("hidden");
+  img.classList.add("hidden");
+  loading.classList.remove("hidden");
+  loading.textContent = "Rendering full map…";
   overlay.classList.add("open");
 
-  // Capture the world layer at its natural (untransformed) size so the export always
-  // shows the FULL map at full resolution, regardless of the user's current pan/zoom.
-  const world = document.getElementById("canvas-world");
-  const prevTransform = world.style.transform;
-  const prevSelected = document.querySelector(".node.selected");
-  if(prevSelected) prevSelected.classList.remove("selected");
-  world.style.transform = "translate(0px, 0px) scale(1)";
+  const built = buildExportSvg();
+  if(!built){ loading.textContent = "Nothing to export — the map is empty."; return; }
 
-  // let layout settle before snapshotting
-  requestAnimationFrame(()=> requestAnimationFrame(()=>{
-    html2canvas(world, { backgroundColor:"#12161a", scale:2, useCORS:true, logging:false })
-      .then(canvas=>{
-        world.style.transform = prevTransform;
-        if(prevSelected) prevSelected.classList.add("selected");
-        img.src = canvas.toDataURL("image/png");
-        img.classList.remove("hidden");
-        loading.classList.add("hidden");
-      })
-      .catch(err=>{
-        world.style.transform = prevTransform;
-        if(prevSelected) prevSelected.classList.add("selected");
-        console.error(err);
-        loading.textContent = "Export failed — try again, or use ⬇ Snapshot as a fallback.";
-      });
-  }));
+  // rasterize SVG → PNG at the highest scale that stays within safe canvas limits
+  const MAX_DIM = 8000;
+  const scale = Math.max(1, Math.min(2, MAX_DIM / Math.max(built.W, built.H)));
+  const blob = new Blob([built.svg], {type:"image/svg+xml;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const image = new Image();
+  image.onload = ()=>{
+    try{
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(built.W*scale);
+      canvas.height = Math.round(built.H*scale);
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+      img.src = canvas.toDataURL("image/png");
+      img.classList.remove("hidden");
+      loading.classList.add("hidden");
+    }catch(err){
+      console.error(err);
+      loading.textContent = "PNG conversion failed — the map may be extremely large. Try collapsing some stages first.";
+    }finally{
+      URL.revokeObjectURL(url);
+    }
+  };
+  image.onerror = ()=>{
+    URL.revokeObjectURL(url);
+    loading.textContent = "Render failed — please report this with the F12 console error.";
+  };
+  image.src = url;
 }
 
 function buildReport(){
