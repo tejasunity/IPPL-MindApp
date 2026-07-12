@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+\<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Innotek Process Map — NFG Wet Processing Redesign</title>
+<title>Innotek Process Map — NEG Processing Redesign</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
@@ -35,13 +35,14 @@
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--bg);
   font-family:'IBM Plex Sans',sans-serif;color:var(--text);}
+body{ display:flex; flex-direction:column; }
 button, select, input, textarea{font-family:inherit;}
 
 /* ============ TOP BAR ============ */
 #topbar{
-  height:52px; display:flex; align-items:center; gap:10px;
-  padding:0 14px; background:var(--bg-panel); border-bottom:1px solid var(--border);
-  position:relative; z-index:50;
+  flex:0 0 auto; display:flex; align-items:center; align-content:center; flex-wrap:wrap; gap:8px 10px;
+  padding:9px 14px; background:var(--bg-panel); border-bottom:1px solid var(--border);
+  position:relative; z-index:50; overflow-x:auto;
 }
 #topbar .brand{
   font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:15px;
@@ -83,7 +84,7 @@ button, select, input, textarea{font-family:inherit;}
 
 /* ============ CANVAS ============ */
 #canvas-viewport{
-  position:absolute; top:52px; left:0; right:0; bottom:0; overflow:hidden;
+  position:relative; flex:1 1 auto; min-height:0; overflow:hidden;
   background-color:var(--bg);
   background-image:
     linear-gradient(var(--grid) 1px, transparent 1px),
@@ -158,7 +159,7 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
 
 /* ============ SIDE PANEL ============ */
 #side-panel{
-  position:absolute; top:52px; right:0; bottom:0; width:340px; background:var(--bg-panel);
+  position:absolute; top:0; right:0; bottom:0; width:340px; background:var(--bg-panel);
   border-left:1px solid var(--border); z-index:40; transform:translateX(100%); transition:transform .18s ease;
   display:flex; flex-direction:column; overflow:hidden;
 }
@@ -271,7 +272,7 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
 
 /* ============ TOAST ============ */
 #toast{
-  position:absolute; top:64px; left:50%; transform:translateX(-50%) translateY(-8px); z-index:200;
+  position:absolute; top:16px; left:50%; transform:translateX(-50%) translateY(-8px); z-index:200;
   background:var(--bg-panel-2); border:1px solid var(--border); padding:9px 16px; border-radius:5px;
   font-size:12.5px; opacity:0; pointer-events:none; transition:all .2s; box-shadow:0 6px 20px rgba(0,0,0,.4);
 }
@@ -286,10 +287,13 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
 #report-content{ max-width:900px; margin:0 auto; padding:36px 30px 80px; }
 #report-content h1{ font-family:'Space Grotesk',sans-serif; font-size:26px; border-bottom:2px solid var(--blueprint); padding-bottom:14px;}
 .report-stage{ margin-top:34px; }
-.report-stage h2{ font-family:'Space Grotesk',sans-serif; font-size:18px; color:var(--blueprint); border-left:3px solid var(--blueprint); padding-left:10px;}
-.report-node{ border:1px solid var(--border); border-radius:5px; padding:14px 16px; margin:10px 0; background:var(--bg-panel);}
+.report-stage h2{ font-family:'Space Grotesk',sans-serif; font-size:18px; color:var(--blueprint); border-left:3px solid var(--blueprint); padding-left:10px;
+  break-after:avoid; page-break-after:avoid; }
+.report-node{ border:1px solid var(--border); border-radius:5px; padding:14px 16px; margin:10px 0; background:var(--bg-panel);
+  break-inside:avoid; page-break-inside:avoid; }
 .report-node h4{ margin:0 0 8px; font-family:'Space Grotesk',sans-serif; font-size:14.5px; display:flex; align-items:center; gap:8px;}
-.report-node .rn-grid{ display:grid; grid-template-columns:1fr 1fr; gap:6px 18px; font-size:12px; font-family:'IBM Plex Mono',monospace; color:var(--text-dim); margin-bottom:8px;}
+.report-node .rn-grid{ font-size:12px; font-family:'IBM Plex Mono',monospace; color:var(--text-dim); margin-bottom:8px; }
+.report-node .rn-grid > div{ display:inline-block; width:47%; vertical-align:top; margin:0 2% 6px 0; }
 .report-node .rn-grid b{ color:var(--text); font-weight:600; }
 .report-node .rn-notes{ font-size:12.5px; color:var(--text-dim); line-height:1.6; border-top:1px solid var(--border-soft); padding-top:8px; margin-top:4px;}
 @media print{
@@ -358,45 +362,45 @@ svg#edges-layer{ position:absolute; top:0; left:0; overflow:visible; pointer-eve
     <svg id="edges-layer"></svg>
     <div id="nodes-layer"></div>
   </div>
-</div>
 
-<div id="legend">
-  <h4>Category</h4>
-  <div class="legend-row"><span class="sw" style="background:var(--c-material)"></span>Material handling</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-chemical)"></span>Chemical</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-mechanical)"></span>Mechanical</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-thermal)"></span>Thermal</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-packaging)"></span>Packaging</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-safety)"></span>Safety</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-data)"></span>Data / Systems</div>
-  <div class="legend-row"><span class="sw" style="background:var(--c-electrical)"></span>Electrical</div>
-  <h4 style="margin-top:9px;">Status border</h4>
-  <div class="legend-row" style="color:var(--text-dim)"><span style="width:16px;height:0;border-top:2px solid var(--text-dim);"></span>As-is</div>
-  <div class="legend-row" style="color:var(--amber)"><span style="width:16px;height:0;border-top:2px dashed var(--amber);"></span>Redesign</div>
-  <div class="legend-row" style="color:var(--c-packaging)"><span style="width:16px;height:0;border-top:2px dashed var(--c-packaging);"></span>New equipment</div>
-  <div class="legend-row" style="color:var(--danger)"><span style="width:16px;height:0;border-top:2px dashed var(--danger);"></span>Eliminate</div>
-</div>
-
-<div id="zoom-controls">
-  <button id="zoom-in">+</button>
-  <button id="zoom-out">−</button>
-  <button id="zoom-fit">⤢</button>
-</div>
-
-<div id="side-panel">
-  <div id="panel-header">
-    <div class="cat-dot" id="panel-cat-dot"></div>
-    <textarea id="panel-title-input" rows="2"></textarea>
-    <button id="panel-close">✕</button>
+  <div id="legend">
+    <h4>Category</h4>
+    <div class="legend-row"><span class="sw" style="background:var(--c-material)"></span>Material handling</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-chemical)"></span>Chemical</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-mechanical)"></span>Mechanical</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-thermal)"></span>Thermal</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-packaging)"></span>Packaging</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-safety)"></span>Safety</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-data)"></span>Data / Systems</div>
+    <div class="legend-row"><span class="sw" style="background:var(--c-electrical)"></span>Electrical</div>
+    <h4 style="margin-top:9px;">Status border</h4>
+    <div class="legend-row" style="color:var(--text-dim)"><span style="width:16px;height:0;border-top:2px solid var(--text-dim);"></span>As-is</div>
+    <div class="legend-row" style="color:var(--amber)"><span style="width:16px;height:0;border-top:2px dashed var(--amber);"></span>Redesign</div>
+    <div class="legend-row" style="color:var(--c-packaging)"><span style="width:16px;height:0;border-top:2px dashed var(--c-packaging);"></span>New equipment</div>
+    <div class="legend-row" style="color:var(--danger)"><span style="width:16px;height:0;border-top:2px dashed var(--danger);"></span>Eliminate</div>
   </div>
-  <div id="panel-body"></div>
-  <div id="panel-footer">
-    <button id="btn-add-child">+ Add child node</button>
-    <button id="btn-delete-node">Delete</button>
-  </div>
-</div>
 
-<div id="toast"></div>
+  <div id="zoom-controls">
+    <button id="zoom-in">+</button>
+    <button id="zoom-out">−</button>
+    <button id="zoom-fit">⤢</button>
+  </div>
+
+  <div id="side-panel">
+    <div id="panel-header">
+      <div class="cat-dot" id="panel-cat-dot"></div>
+      <textarea id="panel-title-input" rows="2"></textarea>
+      <button id="panel-close">✕</button>
+    </div>
+    <div id="panel-body"></div>
+    <div id="panel-footer">
+      <button id="btn-add-child">+ Add child node</button>
+      <button id="btn-delete-node">Delete</button>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+</div>
 
 <!-- Settings modal -->
 <div class="modal-overlay" id="modal-settings">
@@ -955,7 +959,7 @@ function fitToScreen(){
   const vp = document.getElementById("canvas-viewport");
   let panning=false, sx=0, sy=0, stx=0, sty=0;
   vp.addEventListener("pointerdown", (e)=>{
-    if(e.target.closest(".node")) return;
+    if(e.target.closest(".node, #legend, #zoom-controls, #side-panel, #toast")) return;
     panning = true; vp.classList.add("panning");
     sx=e.clientX; sy=e.clientY; stx=view.tx; sty=view.ty;
     vp.setPointerCapture(e.pointerId);
